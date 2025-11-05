@@ -7,9 +7,9 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 # ---------------------------
 # Load & align the three zones
 # ---------------------------
-z1 = pd.read_csv("/Users/santiagosantafe/Downloads/ambient-weather-20250322-20250925-3.csv", sep=",")
-z2 = pd.read_csv("/Users/santiagosantafe/Downloads/ICRERA/Z2_GIRALDA_ambient-weather-20250322-20250925.csv", sep=";")
-z3 = pd.read_csv("/Users/santiagosantafe/Downloads/ICRERA/Z3_OIKOS_ambient-weather-20250322-20250925.csv", sep=";")
+z1 = pd.read_csv("Z1_CAJICA_ambient-weather-20250322-20250925.csv", sep=",")
+z2 = pd.read_csv("Z2_GIRALDA_ambient-weather-20250322-20250925.csv", sep=";")
+z3 = pd.read_csv("Z3_OIKOS_ambient-weather-20250322-20250925.csv", sep=";")
 
 for df in (z1, z2, z3):
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
