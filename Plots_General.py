@@ -5,9 +5,9 @@ import matplotlib.pyplot as plt
 # 1) Load data
 # ----------------------------
 # Asegúrate de que las rutas a tus archivos CSV sean correctas
-z1 = pd.read_csv("/Users/santiagosantafe/Downloads/ambient-weather-20250322-20250925-5.csv", sep=",")
-z2 = pd.read_csv("/Users/santiagosantafe/Downloads/ICRERA/Z2_GIRALDA_ambient-weather-20250322-20250925.csv", sep=";")
-z3 = pd.read_csv("/Users/santiagosantafe/Downloads/ICRERA/Z3_OIKOS_ambient-weather-20250322-20250925.csv", sep=";")
+z1 = pd.read_csv("Z1_CAJICA_ambient-weather-20250604-20251104.csv", sep=",")
+z2 = pd.read_csv("Z2_GIRALDA_ambient-weather-20250604-20251104.csv", sep=";")
+z3 = pd.read_csv("Z3_OIKOS_ambient-weather-20250604-20251104.csv", sep=";")
 
 for df in (z1, z2, z3):
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
