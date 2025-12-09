@@ -1,0 +1,37 @@
+CRANE DIGITAL TWIN - DATASET SUMMARY
+======================================================================
+
+Dataset period: 2025-06-04 00:00:00-05:00 to 2025-11-04 23:55:00-05:00
+Total duration: 153 days
+Total records: 39,792
+Sampling frequency: 5 minutes
+
+CRANE CONFIGURATION:
+  boom_angle: 45
+  load_weight: 5.0
+  crane_height: 20
+  boom_length: 25
+  max_capacity: 10.0
+  wind_limit_loaded: 12
+  wind_limit_unloaded: 20
+
+FEATURES (15):
+  • Wind Speed (m/sec)_z1
+  • Wind Gust (m/sec)_z1
+  • Wind Direction (°)_z1
+  • Outdoor Temperature (°C)_z1
+  • Humidity (%)_z1
+  • Absolute Pressure (mmHg)_z1
+  • wind_dir_sin_z1
+  • wind_dir_cos_z1
+  • gust_factor_z1
+  • wind_speed_change_z1
+  • wind_speed_change_rate_z1
+  • boom_angle
+  • load_weight
+  • crane_height
+  • hour
+
+CLASS DISTRIBUTION:
+  Safe periods: 39,792 (100.00%)
+  Unsafe periods: -79,584 (-200.00%)
