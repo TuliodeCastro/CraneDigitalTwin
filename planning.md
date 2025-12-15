@@ -1,5 +1,138 @@
 
 
+Based on the `EDA.ipynb` file and your requirements, here is the roadmap to build the Machine Learning model and integrate the crane simulation data.
+
+### **Strategy: Weather Forecasting & Risk Assessment**
+
+Since you need to forecast weather at a specific point (the "Middle Zone") where you likely don't have a physical sensor, we will create a **"Virtual Sensor"** using data from stations Z1, Z2, and Z3.
+
+-----
+
+### **Phase 1: Data Engineering (Preparing the Dataset)**
+
+Before training, we need to transform the data you visualized in the EDA into a format the model can understand.
+
+**Task 1.1: Create the "Virtual Station" (The Target)**
+Since the crane is in the middle, we need to estimate the *ground truth* weather there to train the model.
+
+  * **Action:** Calculate the weighted average of Wind Speed and Gust from Z1, Z2, and Z3 based on their distance to the crane.
+  * **Formula (Inverse Distance Weighting):**
+    $$Wind_{middle} = \frac{\sum (Wind_i / Distance_i)}{\sum (1 / Distance_i)}$$
+    *(Where $i$ is Z1, Z2, Z3)*.
+  * **Result:** A new column `Wind_Speed_Target` in your dataframe.
+
+**Task 1.2: Feature Engineering (The Inputs)**
+The model needs to know the *past* to predict the *future*.
+
+  * **Lag Features:** Create columns for past values (e.g., `Wind_Speed_Z1_t-5min`, `Wind_Speed_Z1_t-10min`).
+  * **Time Features:** Extract `Hour`, `Month`, and `DayOfWeek` from the `Date` column (the EDA shows `Date` is already datetime format).
+  * **Crane Constraints:** Add columns for crane limits (e.g., `Max_Safe_Wind_Speed` from your simulation data) as static features or thresholds.
+
+-----
+
+### **Phase 2: Machine Learning Modeling**
+
+We will build two components: a **Forecaster** (predicts numbers) and a **Classifier** (predicts safety).
+
+**Task 2.1: The Forecasting Model (Regressor)**
+
+  * **Goal:** Predict wind speed at the Middle Point for the next 2-3 hours.
+  * **Algorithm:** **XGBoost Regressor** or **Random Forest Regressor** and LSTM. These handle non-linear weather patterns better than simple regression.
+  * **Input ($X$):** Current wind, gust, direction, temperature, pressure (from Z1, Z2, Z3) + Time features.
+  * **Output ($y$):** `Wind_Speed_Target` (at time $t+10$).
+
+**Task 2.2: The Safety Model (Rule-Based or Classifier)**
+
+  * **Goal:** Output a binary "Safe / Unsafe" signal or a Risk Level (Low/Medium/High).
+  * **Logic:**
+      * Take the *Predicted Wind Speed* from Task 2.1.
+      * Compare it against the *Crane Simulation Limits*.
+      * *Example:* If `Predicted_Gust` \> `Crane_Limit_20m_Height`, then `Status = UNSAFE`.
+
+-----
+
+### **Phase 3: Code Structure for Your Notebook**
+
+You can add these steps directly after your EDA. Here is a Python template to guide you:
+
+```python
+# 1. Feature Engineering
+# Create a target variable (Virtual Middle Point)
+# Assuming equal distance for simplicity, or use specific weights
+df['Wind_Speed_Middle'] = (df['Wind Speed (m/sec)_z1'] +
+                           df['Wind Speed (m/sec)_z2'] +
+                           df['Wind Speed (m/sec)_z3']) / 3
+
+# Create Target: Shift data to predict 10 mins into the future
+# Assuming 1 row = 1 minute data
+df['Target_Wind_10min'] = df['Wind_Speed_Middle'].shift(-10)
+
+# Drop rows with NaN (the last 10 mins)
+df_ml = df.dropna()
+
+# 2. Select Features
+features = [
+    'Wind Speed (m/sec)_z1', 'Wind Direction (°)_z1',
+    'Wind Speed (m/sec)_z2', 'Wind Direction (°)_z2',
+    'Wind Speed (m/sec)_z3', 'Wind Direction (°)_z3',
+    'Outdoor Temperature (°C)_z1', 'Absolute Pressure (mmHg)_z1'
+]
+
+X = df_ml[features]
+y = df_ml['Target_Wind_10min']
+
+# 3. Train Model
+from sklearn.model_selection import train_test_split
+from xgboost import XGBRegressor
+from sklearn.metrics import mean_absolute_error
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+
+model = XGBRegressor(n_estimators=100, learning_rate=0.1)
+model.fit(X_train, y_train)
+
+# 4. Evaluate
+predictions = model.predict(X_test)
+print(f"Mean Absolute Error: {mean_absolute_error(y_test, predictions):.2f} m/s")
+
+# 5. Safety Logic (Integration with Crane Data)
+# Example threshold from crane specs
+CRANE_LIMIT = 15.0 # m/s
+
+def get_safety_status(pred_speed):
+    if pred_speed >= CRANE_LIMIT:
+        return "CRITICAL RISK"
+    elif pred_speed >= CRANE_LIMIT * 0.8:
+        return "WARNING"
+    else:
+        return "SAFE"
+
+# Test on a few predictions
+print(f"Predicted: {predictions[0]:.2f} m/s -> Status: {get_safety_status(predictions[0])}")
+```
+
+-----
+
+### **Phase 4: Export for Dashboard (Web)**
+
+To connect this to your future dashboard with the 3D part:
+
+**Task 4.1: Save the Model**
+
+  * Use `joblib` or `pickle` to save the trained model file (e.g., `wind_predictor.pkl`).
+
+**Task 4.2: Create an Inference Script**
+
+  * Write a small Python script that:
+    1.  Receives current live data from the API (Z1, Z2, Z3).
+    2.  Loads `wind_predictor.pkl`.
+    3.  Predicts the wind for the next 10 mins.
+    4.  Returns a JSON object: `{'forecast': 12.5, 'status': 'UNSAFE', 'coordinates': [x, y, z]}`.
+
+**Task 4.3: 3D Visualization Data**
+
+  * For the 3D web part, your ML output acts as the "driver." If ML says "High Wind," the 3D crane in the dashboard should visually change color (e.g., to red) or show a warning animation.
+
 
 Here is the comprehensive step-by-step guide in English, designed to be built from scratch and split between two developers.
 
