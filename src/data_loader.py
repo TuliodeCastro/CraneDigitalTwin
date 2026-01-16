@@ -31,6 +31,8 @@ class DataLoader:
         df[numeric_cols] = df[numeric_cols].interpolate(method='linear').fillna(method='bfill')
 
         return df
+    
+    
 
     def parse_ansys_profile(self, filename: str) -> pd.DataFrame:
         """
