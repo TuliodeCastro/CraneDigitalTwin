@@ -1,74 +1,64 @@
 import os
-import glob
-import re
-import numpy as np
 import pandas as pd
-import joblib
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import r2_score
+from pipeline_setup import CFDPipeline
+from time_series_model import WindForecasterLSTM
+from data_loader import DataLoader
 
-class CFDPipeline:
-    def __init__(self, raw_profiles_path, output_lookup_path, rupture_pressure=355.0):
-        self.profiles_path = raw_profiles_path
-        self.output_csv = output_lookup_path
-        self.rupture_pressure = rupture_pressure
-        self.model = None
+def main():
+    """
+    Main entry point for configuring and training the Digital Twin models.
+    """
+    print("Starting Digital Twin Configuration...")
+    
+    base_dir = os.getcwd()
+    data_dir = os.path.join(base_dir, "data")
+    
+    # ---------------------------------------------------------
+    # 1. TRAIN PHYSICS-BASED MODEL (Random Forest)
+    # ---------------------------------------------------------
+    print("\n--- Step 1: Physics Model Training (CFD Surrogate) ---")
+    
+    pipeline = CFDPipeline(
+        raw_profiles_path=os.path.join(data_dir, "profiles"),
+        output_lookup_path=os.path.join(data_dir, "simulation_lookup.csv")
+    )
+    
+    try:
+        # Generate lookup table from raw ANSYS profiles
+        df_sim = pipeline.generate_lookup_table()
+        # Train the surrogate model
+        pipeline.train_surrogate_model(df_sim)
+    except Exception as e:
+        print(f"[WARNING] Skipping physics model training (Check .prof files): {e}")
 
-    def _read_prof_pressure(self, filepath):
-        pressures = []
-        reading = False
-        try:
-            with open(filepath, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("(pressure"):
-                        reading = True
-                        continue
-                    if reading:
-                        if line.startswith(")"): break
-                        try:
-                            val = float(line)
-                            pressures.append(val)
-                        except ValueError: continue
-            return np.array(pressures)
-        except Exception:
-            return np.array([])
-
-    def generate_lookup_table(self):
-        print("⚙️  [FÍSICA] Procesando perfiles CFD de ANSYS...")
-        search_path = os.path.join(self.profiles_path, "**", "*.prof")
-        files = glob.glob(search_path, recursive=True)
+    # ---------------------------------------------------------
+    # 2. TRAIN TIME-SERIES MODEL (LSTM)
+    # ---------------------------------------------------------
+    print("\n--- Step 2: Time-Series Model Training (LSTM) ---")
+    
+    loader = DataLoader(data_dir)
+    
+    try:
+        # Load the processed dataset
+        # Ensure the file path matches your directory structure
+        dataset_path = os.path.join("processed", "crane_digital_twin_ml_dataset.csv")
+        df_iot = loader.load_iot_dataset(dataset_path)
         
-        rows = []
-        for filepath in files:
-            # Busca patrones como 'ang_45' y 'vel_10'
-            match_ang = re.search(r"ang[a-z_]*(\d+)", filepath, re.IGNORECASE)
-            match_vel = re.search(r"vel[a-z_]*(\d+)", filepath, re.IGNORECASE)
+        # Feature Engineering: Calculate Virtual Wind if it does not exist
+        if 'Virtual_Wind' not in df_iot.columns:
+            print("Calculating 'Virtual_Wind' average from sensor zones...")
+            wind_cols = [c for c in df_iot.columns if 'Wind Speed' in c]
+            df_iot['Virtual_Wind'] = df_iot[wind_cols].mean(axis=1)
 
-            if match_ang and match_vel:
-                angle = float(match_ang.group(1))
-                velocity = float(match_vel.group(1))
-                pressures = self._read_prof_pressure(filepath)
-                
-                if len(pressures) > 0:
-                    p_max = np.max(np.abs(pressures))
-                    risk = min(p_max / self.rupture_pressure, 1.0)
-                    rows.append({"angle": angle, "velocity": velocity, "risk_score": risk})
-
-        df = pd.DataFrame(rows)
-        df.to_csv(self.output_csv, index=False)
-        print(f"✅ [FÍSICA] Lookup Table generada: {len(df)} escenarios.")
-        return df
-
-    def train_surrogate_model(self, df_risk):
-        print("🧠 [FÍSICA] Entrenando Modelo Sustituto (Random Forest)...")
-        X = df_risk[["angle", "velocity"]]
-        y = df_risk["risk_score"]
-
-        self.model = RandomForestRegressor(n_estimators=200, max_depth=10, random_state=42)
-        self.model.fit(X, y)
+        # Initialize and train the LSTM model
+        lstm = WindForecasterLSTM(history_window=3)
+        lstm.train(df_iot, target_col='Virtual_Wind')
         
-        # Guardar
-        os.makedirs("models", exist_ok=True)
-        joblib.dump(self.model, "models/surrogate_risk_model.pkl")
-        print(f"💾 [FÍSICA] Modelo guardado (R2: {r2_score(y, self.model.predict(X)):.4f})")
+    except Exception as e:
+        print(f"[ERROR] Critical failure loading IoT data: {e}")
+
+    print("\nConfiguration Complete. System ready.")
+    print("To launch the interface, run: streamlit run dashboard.py")
+
+if __name__ == "__main__":
+    main()

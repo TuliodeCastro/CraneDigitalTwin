@@ -1,78 +1,158 @@
-# src/twin_physics.py
 import pandas as pd
 import numpy as np
-from scipy.interpolate import interp1d
+import joblib
+import os
+import sys
+from pathlib import Path
 
-class DigitalTwinPhysics:
-    def __init__(self, lookup_file_path: str):
-        """
-        Inicializa el motor de física cargando la tabla de resultados de ANSYS.
-        """
-        self.sim_data = pd.read_csv(lookup_file_path)
-        
-        # Crear interpoladores: Convierten puntos discretos (10m/s, 12m/s) en funciones continuas
-        self.stress_func = interp1d(
-            self.sim_data['wind_speed_ref'], 
-            self.sim_data['max_stress_mpa'], 
-            kind='linear', 
-            fill_value="extrapolate"
-        )
-        self.safety_func = interp1d(
-            self.sim_data['wind_speed_ref'], 
-            self.sim_data['safety_factor'], 
-            kind='linear', 
-            fill_value="extrapolate"
-        )
+# Add the current directory to sys.path to ensure local modules can be found
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-    def calculate_virtual_wind(self, row):
-        """
-        Calcula el viento en la grúa usando las 3 estaciones (Promedio simple o ponderado).
-        Usa las columnas reales de tu dataset.
-        """
-        w1 = row.get('Wind Speed (m/sec)_z1', 0)
-        w2 = row.get('Wind Speed (m/sec)_z2', 0)
-        w3 = row.get('Wind Speed (m/sec)_z3', 0)
-        
-        # Promedio simple (se puede mejorar con IDW si tienes coordenadas)
-        return (w1 + w2 + w3) / 3.0
+# Import the Time Series model
+try:
+    from time_series_model import WindForecasterLSTM
+except ImportError:
+    # Fallback if running from a different directory depth
+    sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+    from time_series_model import WindForecasterLSTM
 
-    def assess_structural_health(self, wind_speed: float):
+class DigitalTwinBackend:
+    def __init__(self):
         """
-        Entrada: Velocidad de viento real (Virtual Sensor).
-        Salida: Estrés estimado (MPa) y Factor de Seguridad (basado en ANSYS).
+        Initializes the Digital Twin Backend.
+        Sets up paths for models and initializes the LSTM architecture.
         """
-        # Evitar valores negativos
-        wind_speed = max(0.0, wind_speed)
+        # 1. Path Detection
+        self.base_dir = Path(__file__).resolve().parent
+        self.models_dir = self.base_dir.parent / "models"
         
-        est_stress = float(self.stress_func(wind_speed))
-        est_safety = float(self.safety_func(wind_speed))
+        # 2. Risk Model Path (Random Forest)
+        self.risk_model_path = self.models_dir / "surrogate_risk_model.pkl"
         
-        # Determinar estado
-        if est_safety < 1.0:
-            status = "CRITICAL" # Falla estructural
-        elif est_safety < 1.5:
-            status = "WARNING"  # Margen bajo
+        # 3. LSTM Model Paths (Time Series)
+        self.lstm_model_path = self.models_dir / "lstm_wind_forecaster.keras"
+        self.scaler_path = self.models_dir / "scaler_wind.pkl"
+
+        self.risk_model = None
+        
+        # Initialize LSTM class (structure only, weights loaded later)
+        self.lstm = WindForecasterLSTM(history_window=3)
+        # Override internal paths of the LSTM instance to ensure consistency
+        self.lstm.model_path = str(self.lstm_model_path)
+        self.lstm.scaler_path = str(self.scaler_path)
+
+    def load_models(self):
+        """
+        Loads the trained machine learning models from disk into memory.
+        """
+        # A. Load Physics Model (Random Forest)
+        if self.risk_model_path.exists():
+            self.risk_model = joblib.load(self.risk_model_path)
+            print("Backend: Physics Risk Model loaded successfully.")
         else:
-            status = "SAFE"     # Operación normal
-            
-        return est_stress, est_safety, status
+            raise FileNotFoundError(f"Risk model not found at: {self.risk_model_path}")
+        
+        # B. Load Time-Series Model (LSTM)
+        if not self.lstm.load():
+            print("Warning: LSTM model could not be loaded. Predictions will be unavailable.")
 
-    def run_simulation_batch(self, df: pd.DataFrame) -> pd.DataFrame:
+    def get_digital_twin_status(self, current_wind, current_angle, recent_history):
         """
-        Procesa todo el dataset histórico y añade columnas de física simulada.
+        Calculates the real-time status of the Digital Twin.
+        
+        Args:
+            current_wind (float): Current wind speed (m/s).
+            current_angle (float): Current wind angle (degrees).
+            recent_history (array): Last 3 wind speed measurements for LSTM input.
+            
+        Returns:
+            dict: Dictionary containing current risk, predicted wind, predicted risk, and status.
         """
-        print("⚙️  Calculando Viento Virtual (Centro de la obra)...")
-        df['Virtual_Wind_Speed'] = df.apply(self.calculate_virtual_wind, axis=1)
+        # 1. Calculate CURRENT Risk (Physics)
+        input_now = pd.DataFrame({'angle': [current_angle], 'velocity': [current_wind]})
+        risk_now = self.risk_model.predict(input_now)[0]
+
+        # 2. Predict FUTURE Wind (Time Series - 10 mins ahead)
+        # We predict 2 steps ahead (assuming 5-min intervals = 10 mins)
+        if len(recent_history) >= 3:
+            future_winds = self.lstm.predict_horizon(recent_history, steps=2)
+            wind_t10 = future_winds[-1] 
+        else:
+            # Fallback if insufficient history
+            wind_t10 = current_wind 
+
+        # 3. Calculate FUTURE Risk (Physics)
+        input_future = pd.DataFrame({'angle': [current_angle], 'velocity': [wind_t10]})
+        risk_future = self.risk_model.predict(input_future)[0]
+
+        # 4. Determine Traffic Light Status
+        # Thresholds: <0.5 (Safe), 0.5-0.8 (Warning), >0.8 (Critical)
+        status = "SAFE"
+        if risk_now > 0.8: 
+            status = "CRITICAL"
+        elif risk_future > 0.8: 
+            status = "WARNING_PREDICTED"
+        elif risk_now > 0.5: 
+            status = "WARNING"
+
+        return {
+            "current_wind": current_wind,
+            "current_risk": risk_now,
+            "future_wind_10m": wind_t10,
+            "future_risk_10m": risk_future,
+            "status": status
+        }
+
+    def get_forecast_data(self, recent_history, steps=12):
+        """
+        Generates a recursive forecast table for reporting.
         
-        print("⚙️  Interpolando estrés estructural (Physics-Based)...")
+        Args:
+            recent_history (array): Input for LSTM.
+            steps (int): Number of steps to predict (default 12 steps = 1 hour).
+            
+        Returns:
+            pd.DataFrame: Table with predicted wind and associated risk.
+        """
+        # 1. Get wind predictions
+        future_winds = self.lstm.predict_horizon(recent_history, steps=steps)
         
-        # Aplicamos la física fila por fila
-        simulation_results = df['Virtual_Wind_Speed'].apply(
-            lambda x: self.assess_structural_health(x)
-        )
+        rows = []
+        for wind in future_winds:
+            # 2. Map every future wind point to physical risk
+            # We assume a worst-case angle (0 degrees) for general forecasting
+            input_df = pd.DataFrame({'angle': [0], 'velocity': [wind]})
+            predicted_risk = self.risk_model.predict(input_df)[0]
+            
+            status_label = "SAFE"
+            if predicted_risk > 0.8: status_label = "CRITICAL"
+            elif predicted_risk > 0.5: status_label = "WARNING"
+            
+            rows.append({
+                "Predicted Wind (m/s)": wind,
+                "Predicted Risk": predicted_risk,
+                "Status": status_label
+            })
+            
+        return pd.DataFrame(rows)
+
+    def run_stress_test(self, wind_range, angle_fixed=0):
+        """
+        Simulates the 'Curve of Death' for the Stress Test Lab.
         
-        # Desempaquetar resultados en nuevas columnas
-        # Zip (*...) es un truco eficiente de Python para separar tuplas
-        df['Sim_VonMises_Stress'], df['Sim_Safety_Factor'], df['Sim_Status'] = zip(*simulation_results)
+        Args:
+            wind_range (array): Array of wind speeds to test.
+            angle_fixed (float): The angle to fix for the simulation.
+            
+        Returns:
+            list: Risk scores corresponding to the input winds.
+        """
+        sim_data = []
+        # Batch prediction for performance
+        input_df = pd.DataFrame({
+            'angle': [angle_fixed] * len(wind_range),
+            'velocity': wind_range
+        })
         
-        return df
+        risks = self.risk_model.predict(input_df)
+        return risks

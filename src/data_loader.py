@@ -6,63 +6,77 @@ import numpy as np
 
 class DataLoader:
     def __init__(self, raw_data_path: str):
+        """
+        Initializes the DataLoader with the base directory for raw data.
+        """
         self.base_path = Path(raw_data_path)
 
-    def load_sensor_data(self, filename: str) -> pd.DataFrame:
+    def load_iot_dataset(self, filename: str) -> pd.DataFrame:
         """
-        Carga y limpia el dataset de sensores IoT.
+        Loads and cleans the IoT sensor dataset.
+        
+        Args:
+            filename (str): The name of the CSV file to load.
+            
+        Returns:
+            pd.DataFrame: A cleaned DataFrame with datetime indexing and interpolated values.
         """
         file_path = self.base_path / filename
         if not file_path.exists():
-            raise FileNotFoundError(f"No se encontró el archivo: {file_path}")
+            raise FileNotFoundError(f"File not found: {file_path}")
 
-        print(f"📊 Cargando datos de sensores desde {filename}...")
+        print(f"Loading sensor data from {filename}...")
         df = pd.read_csv(file_path)
 
-        # 1. Convertir fecha a datetime para manejo de series temporales
-        # Ajustamos el nombre de la columna según tu CSV
+        # 1. Convert 'Date' column to datetime objects for time-series handling
         if 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date'], utc=True)
             df = df.sort_values('Date').reset_index(drop=True)
         
-        # 2. Manejo básico de nulos (Robustez)
-        # Rellenar valores faltantes numéricos con interpolación lineal (común en series de tiempo)
+        # 2. Handle missing values (Robustness)
+        # Fill missing numeric values using linear interpolation followed by backward fill
         numeric_cols = df.select_dtypes(include=[np.number]).columns
-        df[numeric_cols] = df[numeric_cols].interpolate(method='linear').fillna(method='bfill')
+        # Note: Updated to avoid FutureWarning from .fillna(method='bfill')
+        df[numeric_cols] = df[numeric_cols].interpolate(method='linear').bfill()
 
         return df
-    
-    
 
     def parse_ansys_profile(self, filename: str) -> pd.DataFrame:
         """
-        Parsea un archivo .prof de ANSYS para extraer la tabla de Altura vs Velocidad.
-        Asume formato estándar de Fluent Profile ((z 1 2 3) (v 5 6 7)).
+        Parses an ANSYS .prof file to extract Height vs. Velocity tables.
+        Assumes standard Fluent Profile format: ((z 1 2 3) (v 5 6 7)).
+        
+        Args:
+            filename (str): The name of the profile file.
+            
+        Returns:
+            pd.DataFrame: DataFrame containing 'height_m' and 'wind_speed_ms'.
+                          Returns empty DataFrame on failure.
         """
         file_path = self.base_path / 'profiles' / filename
         if not file_path.exists():
-            raise FileNotFoundError(f"No se encontró el perfil: {file_path}")
+            raise FileNotFoundError(f"Profile not found: {file_path}")
 
         with open(file_path, 'r') as f:
             content = f.read()
 
-        # Lógica Robusta: Usar Regex para encontrar listas de datos entre paréntesis
-        # Buscamos patrones como (z 0.0 10.0 20.0)
+        # Robust Logic: Use Regex to find data lists enclosed in parentheses
+        # Looks for patterns like (z 0.0 10.0 20.0)
         try:
-            # Extraer coordenadas Z (altura)
+            # Extract Z coordinates (height)
             z_match = re.search(r'\(z\s+([\d\.\s\w\+\-]+)\)', content)
-            # Extraer velocidad (usualmente u, v, o magnitude)
+            # Extract velocity (usually labeled as u, v, or magnitude)
             v_match = re.search(r'\((?:velocity|u|magnitude)\s+([\d\.\s\w\+\-]+)\)', content)
 
             if not z_match or not v_match:
-                raise ValueError("Formato .prof no reconocido o faltan datos.")
+                raise ValueError("ANSYS .prof format not recognized or missing data.")
 
-            # Convertir string a lista de floats
+            # Convert space-separated strings to lists of floats
             z_values = [float(x) for x in z_match.group(1).split()]
             v_values = [float(x) for x in v_match.group(1).split()]
 
             return pd.DataFrame({'height_m': z_values, 'wind_speed_ms': v_values})
 
         except Exception as e:
-            print(f"⚠️ Error parseando {filename}: {e}")
-            return pd.DataFrame() # Retorna vacío en caso de error para no romper el programa
+            print(f"Error parsing {filename}: {e}")
+            return pd.DataFrame()
